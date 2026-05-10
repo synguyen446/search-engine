@@ -9,6 +9,41 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "diagrams")
 ERA_SPLIT = 2020
 
+SE_COLOR = "#1f77b4"
+AI_COLOR = "#ff7f0e"
+NEUTRAL_COLOR = "#999999"
+
+SEARCH_ENGINE_TERMS = {
+    "search", "search engine", "search engines", "web search", "web",
+    "information retrieval", "retrieval", "query", "ranking", "indexing",
+    "relevance", "engine", "engines", "crawl", "index", "pagerank",
+    "boolean", "documents", "document", "terms", "term", "huge",
+    "result", "results", "propose", "paper propose",
+}
+AI_TERMS = {
+    "ai", "machine learning", "deep learning", "neural", "transformer",
+    "bert", "nlp", "language", "generative", "generative ai", "rag",
+    "chatgpt", "llms", "models", "model", "accuracy", "learning",
+    "intelligence", "artificial", "artificial intelligence",
+    "deep", "neural network", "neural networks", "classification",
+    "training", "embeddings", "semantic",
+}
+
+def categorize_term(term):
+    if term in SEARCH_ENGINE_TERMS:
+        return "Search Engine"
+    if term in AI_TERMS:
+        return "AI"
+    return "Other"
+
+def term_color(term):
+    cat = categorize_term(term)
+    if cat == "Search Engine":
+        return SE_COLOR
+    if cat == "AI":
+        return AI_COLOR
+    return NEUTRAL_COLOR
+
 # ── Load & combine datasets ───────────────────────────────────
 
 ieee = pd.read_csv(os.path.join(DATA_DIR, "IEEE.csv"))
@@ -79,39 +114,68 @@ print("\n── Top 20 DECLINING terms (lost importance in AI era) ──")
 for _, row in declining.iterrows():
     print(f"  {row['term']:<30s}  pre={row['pre_ai']:.4f}  ai={row['ai_era']:.4f}  Δ={row['diff']:+.4f}")
 
-# Plot rising vs declining
+# Plot rising vs declining with color-coding
 fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
-axes[0].barh(rising["term"].values[::-1], rising["diff"].values[::-1], color="#2ca02c")
+rising_colors = [term_color(t) for t in rising["term"].values[::-1]]
+axes[0].barh(rising["term"].values[::-1], rising["diff"].values[::-1], color=rising_colors)
 axes[0].set_title("Top 20 Rising Terms in AI Era")
 axes[0].set_xlabel("TF-IDF Score Change (AI era − Pre-AI)")
 
-axes[1].barh(declining["term"].values[::-1], declining["diff"].values[::-1], color="#d62728")
+declining_colors = [term_color(t) for t in declining["term"].values[::-1]]
+axes[1].barh(declining["term"].values[::-1], declining["diff"].values[::-1], color=declining_colors)
 axes[1].set_title("Top 20 Declining Terms in AI Era")
 axes[1].set_xlabel("TF-IDF Score Change (AI era − Pre-AI)")
+
+from matplotlib.patches import Patch
+legend_elements = [Patch(facecolor=SE_COLOR, label="Search Engine"),
+                   Patch(facecolor=AI_COLOR, label="AI"),
+                   Patch(facecolor=NEUTRAL_COLOR, label="Other")]
+axes[0].legend(handles=legend_elements, loc="lower right")
+axes[1].legend(handles=legend_elements, loc="lower left")
 
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "tfidf_era_comparison.png"), dpi=150)
 print("\nSaved: tfidf_era_comparison.png")
 
 # Side-by-side comparison of key search/IR terms
-search_terms = [
+selected_terms = [
     "search engine", "information retrieval", "search", "retrieval", "query",
-    "ranking", "indexing", "relevance", "web search", "text",
+    "ranking", "indexing", "relevance", "web search",
     "ai", "machine learning", "deep learning", "neural", "transformer",
-    "language", "nlp", "bert", "knowledge", "semantic",
+    "language", "nlp", "bert", "semantic",
 ]
-key_terms = comparison[comparison["term"].isin(search_terms)].sort_values("diff", ascending=False)
+key_terms = comparison[comparison["term"].isin(selected_terms)].copy()
+key_terms["category"] = key_terms["term"].apply(categorize_term)
+key_terms = key_terms.sort_values(["category", "diff"], ascending=[True, False])
 
-fig, ax = plt.subplots(figsize=(12, 8))
+fig, ax = plt.subplots(figsize=(12, 9))
 x = np.arange(len(key_terms))
 width = 0.35
-ax.barh(x + width / 2, key_terms["pre_ai"], width, label=f"Pre-AI (<{ERA_SPLIT})", color="#1f77b4")
-ax.barh(x - width / 2, key_terms["ai_era"], width, label=f"AI Era (≥{ERA_SPLIT})", color="#ff7f0e")
+
+label_colors = [term_color(t) for t in key_terms["term"]]
+
+ax.barh(x + width / 2, key_terms["pre_ai"], width, label=f"Pre-AI (<{ERA_SPLIT})", color="#a8c8e8", edgecolor="#1f77b4", linewidth=1.2)
+ax.barh(x - width / 2, key_terms["ai_era"], width, label=f"AI Era (≥{ERA_SPLIT})", color="#ffc89e", edgecolor="#ff7f0e", linewidth=1.2)
+
 ax.set_yticks(x)
 ax.set_yticklabels(key_terms["term"])
+for tick_label, color in zip(ax.get_yticklabels(), label_colors):
+    tick_label.set_color(color)
+    tick_label.set_fontweight("bold")
+    tick_label.set_fontsize(11)
+
+# Add category separator line
+ai_count = (key_terms["category"] == "AI").sum()
+se_count = (key_terms["category"] == "Search Engine").sum()
+if ai_count > 0 and se_count > 0:
+    sep_y = ai_count - 0.5
+    ax.axhline(y=sep_y, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+    ax.text(ax.get_xlim()[1] * 0.85, sep_y + 0.8, "Search Engine Terms", fontsize=10, color=SE_COLOR, fontweight="bold", ha="center")
+    ax.text(ax.get_xlim()[1] * 0.85, sep_y - 0.8, "AI Terms", fontsize=10, color=AI_COLOR, fontweight="bold", ha="center")
+
 ax.set_xlabel("Mean TF-IDF Score")
-ax.set_title("Key Terms: Pre-AI vs AI Era")
+ax.set_title("Key Terms: Pre-AI vs AI Era (Color-coded by Category)")
 ax.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "tfidf_key_terms_comparison.png"), dpi=150)
