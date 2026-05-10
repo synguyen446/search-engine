@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
+from wordcloud import WordCloud
+from matplotlib.patches import Patch
 import os
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -127,7 +129,6 @@ axes[1].barh(declining["term"].values[::-1], declining["diff"].values[::-1], col
 axes[1].set_title("Top 20 Declining Terms in AI Era")
 axes[1].set_xlabel("TF-IDF Score Change (AI era − Pre-AI)")
 
-from matplotlib.patches import Patch
 legend_elements = [Patch(facecolor=SE_COLOR, label="Search Engine"),
                    Patch(facecolor=AI_COLOR, label="AI"),
                    Patch(facecolor=NEUTRAL_COLOR, label="Other")]
@@ -180,6 +181,62 @@ ax.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "tfidf_key_terms_comparison.png"), dpi=150)
 print("Saved: tfidf_key_terms_comparison.png")
+
+# Word clouds: Pre-AI vs AI Era (color-coded by category)
+def deduplicate_unigrams(frequencies):
+    bigrams = {t for t in frequencies if " " in t}
+    unigrams_to_remove = set()
+    for bg in bigrams:
+        for part in bg.split():
+            if part in frequencies and frequencies[part] <= frequencies[bg]:
+                unigrams_to_remove.add(part)
+    return {t: s for t, s in frequencies.items() if t not in unigrams_to_remove}
+
+def color_func_factory(term_scores):
+    def color_func(word, **kwargs):
+        cat = categorize_term(word)
+        if cat == "Search Engine":
+            return "#1566a8"
+        if cat == "AI":
+            return "#d46a08"
+        return "#666666"
+    return color_func
+
+fig, axes = plt.subplots(1, 2, figsize=(18, 8), facecolor="white")
+
+for ax, era_name, scores_col in [
+    (axes[0], f"Pre-AI (<{ERA_SPLIT})", "pre_ai"),
+    (axes[1], f"AI Era (≥{ERA_SPLIT})", "ai_era"),
+]:
+    top = comparison.nlargest(80, scores_col)
+    frequencies = dict(zip(top["term"], top[scores_col]))
+    frequencies = deduplicate_unigrams(frequencies)
+
+    wc = WordCloud(
+        width=900, height=500,
+        background_color="white",
+        max_words=80,
+        prefer_horizontal=0.7,
+        relative_scaling=0.6,
+        color_func=color_func_factory(frequencies),
+        max_font_size=120,
+        min_font_size=12,
+    ).generate_from_frequencies(frequencies)
+
+    ax.imshow(wc, interpolation="bilinear")
+    ax.set_title(era_name, fontsize=16, fontweight="bold", pad=10)
+    ax.axis("off")
+
+legend_elements = [Patch(facecolor="#1566a8", label="Search Engine"),
+                   Patch(facecolor="#d46a08", label="AI"),
+                   Patch(facecolor="#666666", label="Other")]
+fig.legend(handles=legend_elements, loc="lower center", ncol=3, fontsize=12,
+           frameon=True, fancybox=True, bbox_to_anchor=(0.5, 0.02))
+fig.suptitle("TF-IDF Word Cloud: Pre-AI vs AI Era", fontsize=18, fontweight="bold", y=0.98)
+plt.tight_layout(rect=[0, 0.06, 1, 0.95])
+plt.savefig(os.path.join(OUTPUT_DIR, "tfidf_wordcloud_eras.png"), dpi=150, bbox_inches="tight")
+print("Saved: tfidf_wordcloud_eras.png")
+
 
 # ══════════════════════════════════════════════════════════════
 # PART 2: TOPIC MODELING (LDA)
