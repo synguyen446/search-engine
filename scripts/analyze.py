@@ -237,6 +237,150 @@ plt.tight_layout(rect=[0, 0.06, 1, 0.95])
 plt.savefig(os.path.join(OUTPUT_DIR, "tfidf_wordcloud_eras.png"), dpi=150, bbox_inches="tight")
 print("Saved: tfidf_wordcloud_eras.png")
 
+# ── 1A. Year-by-year TF-IDF trend lines for key terms ─────────
+
+se_track = ["search engine", "information retrieval", "query", "search", "web"]
+ai_track = ["ai", "deep learning", "machine learning", "nlp", "language"]
+
+years = sorted(df["year"].dropna().unique())
+years = [y for y in years if y >= 2015]
+
+yearly_scores = {t: [] for t in se_track + ai_track}
+for y in years:
+    year_abstracts = df[df["year"] == y]["abstract"].dropna().tolist()
+    if len(year_abstracts) < 5:
+        for t in se_track + ai_track:
+            yearly_scores[t].append(np.nan)
+        continue
+    mat = tfidf.transform(year_abstracts)
+    scores = mat.mean(axis=0).A1
+    for t in se_track + ai_track:
+        idx = np.where(features == t)[0]
+        yearly_scores[t].append(scores[idx[0]] if len(idx) > 0 else 0)
+
+fig, ax = plt.subplots(figsize=(14, 7))
+for t in se_track:
+    ax.plot(years, yearly_scores[t], "o-", linewidth=2.5, markersize=6, color=SE_COLOR, alpha=0.7, label=t)
+for t in ai_track:
+    ax.plot(years, yearly_scores[t], "s--", linewidth=2.5, markersize=6, color=AI_COLOR, alpha=0.7, label=t)
+
+ax.axvline(x=ERA_SPLIT, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
+ax.text(ERA_SPLIT + 0.1, ax.get_ylim()[1] * 0.95, "AI Era begins", fontsize=10, color="gray", va="top")
+ax.set_title("TF-IDF Score Trends by Year: Search Engine vs AI Terms", fontsize=14)
+ax.set_xlabel("Year")
+ax.set_ylabel("Mean TF-IDF Score")
+ax.legend(ncol=2, fontsize=9, loc="upper left")
+ax.grid(True, alpha=0.2)
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "tfidf_trend_lines.png"), dpi=150)
+print("Saved: tfidf_trend_lines.png")
+
+# ── 1B. Category dominance shift (% of TF-IDF weight) ────────
+
+se_all = list(SEARCH_ENGINE_TERMS)
+ai_all = list(AI_TERMS)
+
+yearly_dominance = {"year": [], "search_engine_pct": [], "ai_pct": []}
+for y in years:
+    year_abstracts = df[df["year"] == y]["abstract"].dropna().tolist()
+    if len(year_abstracts) < 5:
+        continue
+    mat = tfidf.transform(year_abstracts)
+    scores = mat.mean(axis=0).A1
+
+    se_total = sum(scores[np.where(features == t)[0][0]] for t in se_all if t in features)
+    ai_total = sum(scores[np.where(features == t)[0][0]] for t in ai_all if t in features)
+    combined = se_total + ai_total
+    if combined == 0:
+        continue
+
+    yearly_dominance["year"].append(y)
+    yearly_dominance["search_engine_pct"].append(se_total / combined * 100)
+    yearly_dominance["ai_pct"].append(ai_total / combined * 100)
+
+dom_df = pd.DataFrame(yearly_dominance)
+
+fig, ax = plt.subplots(figsize=(14, 7))
+ax.stackplot(dom_df["year"], dom_df["search_engine_pct"], dom_df["ai_pct"],
+             labels=["Search Engine", "AI"],
+             colors=[SE_COLOR, AI_COLOR], alpha=0.85)
+ax.axvline(x=ERA_SPLIT, color="white", linestyle="--", linewidth=2)
+ax.set_title("Search Engine vs AI: Share of TF-IDF Weight Over Time", fontsize=14)
+ax.set_xlabel("Year")
+ax.set_ylabel("% of Combined SE + AI TF-IDF Weight")
+ax.legend(loc="center right", fontsize=11)
+ax.set_xlim(years[0], years[-1])
+ax.set_ylim(0, 100)
+ax.grid(True, alpha=0.2, axis="y")
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "category_dominance.png"), dpi=150)
+print("Saved: category_dominance.png")
+
+# Print crossover info
+for i, row in dom_df.iterrows():
+    if row["ai_pct"] > row["search_engine_pct"]:
+        print(f"\n  AI overtook Search Engine in {int(row['year'])}")
+        print(f"    AI: {row['ai_pct']:.1f}%  vs  Search Engine: {row['search_engine_pct']:.1f}%")
+        break
+
+# ── 1C. Paper classification: Search vs AI vs Hybrid ──────────
+
+se_indices = [i for i, f in enumerate(features) if f in SEARCH_ENGINE_TERMS]
+ai_indices = [i for i, f in enumerate(features) if f in AI_TERMS]
+
+full_matrix = tfidf.transform(df["abstract"].tolist())
+se_scores_per_doc = np.array(full_matrix[:, se_indices].sum(axis=1)).flatten()
+ai_scores_per_doc = np.array(full_matrix[:, ai_indices].sum(axis=1)).flatten()
+
+df["se_score"] = se_scores_per_doc
+df["ai_score"] = ai_scores_per_doc
+
+def classify_paper(row):
+    se, ai = row["se_score"], row["ai_score"]
+    if se > 0 and ai > 0:
+        ratio = ai / (se + ai)
+        if ratio > 0.65:
+            return "AI-focused"
+        elif ratio < 0.35:
+            return "Search-focused"
+        else:
+            return "Hybrid"
+    elif ai > 0:
+        return "AI-focused"
+    elif se > 0:
+        return "Search-focused"
+    return "Other"
+
+df["paper_class"] = df.apply(classify_paper, axis=1)
+
+yearly_class = df[df["year"] >= 2015].groupby("year")["paper_class"].value_counts(normalize=True).unstack(fill_value=0) * 100
+
+fig, ax = plt.subplots(figsize=(14, 7))
+class_colors = {"Search-focused": SE_COLOR, "Hybrid": "#2ca02c", "AI-focused": AI_COLOR, "Other": NEUTRAL_COLOR}
+for cls in ["Search-focused", "Hybrid", "AI-focused"]:
+    if cls in yearly_class.columns:
+        ax.plot(yearly_class.index, yearly_class[cls], "o-", linewidth=3, markersize=8,
+                color=class_colors[cls], label=cls)
+
+ax.axvline(x=ERA_SPLIT, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
+ax.set_title("Paper Focus Classification Over Time", fontsize=14)
+ax.set_xlabel("Year")
+ax.set_ylabel("% of Papers")
+ax.legend(fontsize=12)
+ax.grid(True, alpha=0.2)
+ax.set_ylim(0, 100)
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, "paper_classification.png"), dpi=150)
+print("Saved: paper_classification.png")
+
+# Print summary
+pre_class = df[df["year"] < ERA_SPLIT]["paper_class"].value_counts(normalize=True) * 100
+ai_class = df[df["year"] >= ERA_SPLIT]["paper_class"].value_counts(normalize=True) * 100
+print(f"\n  Paper classification shift:")
+for cls in ["Search-focused", "Hybrid", "AI-focused"]:
+    pre_val = pre_class.get(cls, 0)
+    ai_val = ai_class.get(cls, 0)
+    print(f"    {cls:<16s}  Pre-AI: {pre_val:5.1f}%  →  AI Era: {ai_val:5.1f}%  ({ai_val - pre_val:+.1f}pp)")
 
 # ══════════════════════════════════════════════════════════════
 # PART 2: TOPIC MODELING (LDA)
